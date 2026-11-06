@@ -1,0 +1,93 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: nexus_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-nexusagent_db}
+      POSTGRES_USER: ${POSTGRES_USER:-nexusadmin}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nexusstrongpassword123}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nexusadmin} -d ${POSTGRES_DB:-nexusagent_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mcp_server:
+    build:
+      context: ./services/mcp_server
+    container_name: nexus_mcp_server
+    restart: always
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./services/backend
+    container_name: nexus_backend
+    restart: always
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    volumes:
+      - ./services/backend:/app
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-nexusadmin}:${POSTGRES_PASSWORD:-nexusstrongpassword123}@postgres:5432/${POSTGRES_DB:-nexusagent_db}
+      - MCP_SERVER_URL=http://mcp_server:8080
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-mock-key}
+      - MODEL_NAME=${MODEL_NAME:-gpt-4o-mini}
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-0.65}
+      - CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mcp_server:
+        condition: service_healthy
+
+  django:
+    build:
+      context: ./services/django_app
+    container_name: nexus_django
+    restart: always
+    volumes:
+      - ./services/django_app:/app
+    ports:
+      - "8001:8001"
+    environment:
+      - DB_NAME=${POSTGRES_DB:-nexusagent_db}
+      - DB_USER=${POSTGRES_USER:-nexusadmin}
+      - DB_PASSWORD=${POSTGRES_PASSWORD:-nexusstrongpassword123}
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - SECRET_KEY=${SECRET_KEY:-nexus-secret}
+      - DJANGO_SUPERUSER_USERNAME=${DJANGO_SUPERUSER_USERNAME:-admin}
+      - DJANGO_SUPERUSER_PASSWORD=${DJANGO_SUPERUSER_PASSWORD:-admin12345}
+      - DJANGO_SUPERUSER_EMAIL=${DJANGO_SUPERUSER_EMAIL:-admin@example.com}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./services/frontend
+    container_name: nexus_frontend
+    restart: always
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_BACKEND_URL=${NEXT_PUBLIC_BACKEND_URL:-http://localhost:8000}
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
